@@ -1,257 +1,212 @@
 /**
- * RCB Ticket Monitor — Production Edition
- * Runs as a one-shot GitHub Actions job on a schedule.
- * All state is managed via a GitHub Actions output file (state.json).
+ * RCB Ticket Monitor — Real-Time Orchestrator
+ *
+ * Architecture:
+ *  - This script is executed by GitHub Actions every 5 minutes.
+ *  - Instead of checking just ONCE per run, it continuously polls for ~4.5 minutes
+ *    with a 15–20 second interval between checks.
+ *  - This gives us near-real-time detection (≤20 seconds from ticket drop to alert).
+ *  - Two parallel scrapes per cycle cut the miss window further in half.
+ *  - State is persisted via state.json (cached by GitHub Actions Cache).
+ *  - Per-match state resets automatically after match date + 1 day.
  */
 
-import puppeteer from 'puppeteer';
-import TelegramBot from 'node-telegram-bot-api';
+import { scrape, STATUS }    from './scraper.js';
+import { loadState, saveState, getMatchState, setMatchState, pruneExpiredMatches } from './state.js';
+import { sendLiveAlert, sendSoldOutAlert, sendBackLiveAlert, sendErrorAlert }       from './notifier.js';
+import { getActiveMatches }  from './matches.js';
 import dotenv from 'dotenv';
-import fs from 'fs';
-import path from 'path';
 
 dotenv.config();
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
-const TOKEN     = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID   = process.env.TELEGRAM_CHAT_ID;
-const TARGET_URL = 'https://shop.royalchallengers.com/ticket';
+const TOKEN   = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// State is persisted between runs via a local JSON file (committed or cached in CI).
-// In GitHub Actions we use actions/cache to persist this across runs.
-const STATE_FILE = path.resolve('./state.json');
+// How long this script runs before exiting (milliseconds).
+// GitHub Actions times out after 6m by default. We run for 4m 30s to be safe.
+const RUN_DURATION_MS = 4 * 60 * 1000 + 30 * 1000; // 4.5 minutes
 
-// User-agent pool to rotate between runs so we look like different browsers
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
-];
+// Poll every 15–20 seconds (randomised to avoid predictable fingerprint)
+const POLL_INTERVAL_MIN_MS = 15_000;
+const POLL_INTERVAL_MAX_MS = 20_000;
+
+// Maximum gap between error alerts (to avoid spamming on a broken site)
+const ERROR_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────
-
-function randomBetween(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function randomUA() {
-    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
 
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
 }
 
-/** Load persisted state, defaults to "not alerted yet". */
-function loadState() {
-    try {
-        if (fs.existsSync(STATE_FILE)) {
-            return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+function randomBetween(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function log(msg) {
+    console.log(`[${new Date().toISOString()}] ${msg}`);
+}
+
+// ─── NOTIFICATION DECISION ENGINE ──────────────────────────────────────────
+
+async function handleMatchResult(match, status, state) {
+    const ms = getMatchState(state, match.id);
+    let dirty = false; // whether state has changed and needs saving
+
+    if (status === STATUS.LIVE) {
+        if (!ms.ticketsLiveAlerted) {
+            await sendLiveAlert(match);
+            ms.ticketsLiveAlerted = true;
+            ms.soldOutAlerted     = false; // reset sold-out in case it cycles
+            dirty = true;
+        } else {
+            log(`  ✅ Match ${match.id}: LIVE — already alerted, skipping.`);
         }
-    } catch (_) { /* ignore corrupt state */ }
-    return { lastAlertedStatus: null, lastAlertedAt: null };
+    }
+
+    else if (status === STATUS.SOLD_OUT) {
+        if (!ms.soldOutAlerted) {
+            await sendSoldOutAlert(match);
+            ms.soldOutAlerted     = true;
+            ms.ticketsLiveAlerted = false; // reset live so if more batches drop we notify
+            dirty = true;
+        } else {
+            log(`  😔 Match ${match.id}: SOLD OUT — already alerted.`);
+        }
+    }
+
+    // Tickets went from LIVE → NOT_LIVE (e.g. between batches)
+    // Reset the live-alerted flag so we trigger again if they go back live.
+    else if ((status === STATUS.NOT_LIVE || status === STATUS.COMING_SOON) && ms.ticketsLiveAlerted) {
+        log(`  🔄 Match ${match.id}: was LIVE but now ${status}. Resetting live alert flag.`);
+        ms.ticketsLiveAlerted = false;
+        dirty = true;
+    }
+
+    // Tickets came back LIVE after being SOLD OUT → special alert
+    else if (status === STATUS.LIVE && ms.soldOutAlerted && !ms.ticketsLiveAlerted) {
+        await sendBackLiveAlert(match);
+        ms.ticketsLiveAlerted = true;
+        ms.soldOutAlerted     = false;
+        dirty = true;
+    }
+
+    else {
+        log(`  ℹ️  Match ${match.id}: Status=${status} — no notification needed.`);
+    }
+
+    ms.lastStatus = status;
+    setMatchState(state, match.id, ms);
+    return dirty;
 }
 
-/** Persist state so we don't spam duplicate alerts. */
-function saveState(state) {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
+// ─── SINGLE POLL CYCLE ─────────────────────────────────────────────────────
 
-/** Classify a page's content into a human-readable ticket status. */
-function classifyPage(text, currentUrl) {
-    const t = text.toLowerCase();
+async function runPollCycle(activeMatches, state) {
+    log(`─── Poll Cycle Start (${activeMatches.length} active home match(es)) ───`);
 
-    // Highest priority: URL never left the disabled redirect → tickets definitely not live
-    if (currentUrl.includes('/merchandise')) {
-        return { status: 'REDIRECTED_TO_MERCH', isLive: false, isSoldOut: false };
+    // Run TWO parallel scrapes per cycle — if either returns LIVE, we win.
+    const [r1, r2] = await Promise.all([
+        scrape({ retries: 2 }),
+        scrape({ retries: 2 }),
+    ]);
+
+    log(`  Scrape #1 → ${r1.status}: ${r1.details}`);
+    log(`  Scrape #2 → ${r2.status}: ${r2.details}`);
+
+    // Pick best result: LIVE > SOLD_OUT > COMING_SOON > NOT_LIVE > ERROR
+    const priority = [STATUS.LIVE, STATUS.SOLD_OUT, STATUS.COMING_SOON, STATUS.NOT_LIVE, STATUS.UNKNOWN, STATUS.ERROR];
+    const best = [r1, r2].sort((a, b) => priority.indexOf(a.status) - priority.indexOf(b.status))[0];
+
+    // Handle errors — alert Telegram if scraping is broken (with cooldown)
+    if (best.status === STATUS.ERROR) {
+        const meta            = state.meta || {};
+        const lastErrorAlerted = meta.lastErrorAlertedAt ? new Date(meta.lastErrorAlertedAt) : null;
+        const timeSinceLast   = lastErrorAlerted ? Date.now() - lastErrorAlerted.getTime() : Infinity;
+
+        if (timeSinceLast > ERROR_ALERT_COOLDOWN_MS) {
+            await sendErrorAlert(best.details || 'Scrape failed after retries');
+            state.meta = { ...meta, lastErrorAlertedAt: new Date().toISOString() };
+        } else {
+            log(`  ⚠️  Error detected but Telegram error-alert on cooldown. Logging only.`);
+        }
+        return; // don't process match states on a failed scrape
     }
 
-    // Check for sold out indicators
-    if (t.includes('sold out') || t.includes('housefull') || t.includes('no tickets available')) {
-        return { status: 'SOLD_OUT', isLive: false, isSoldOut: true };
+    // Evaluate for each active match
+    let stateChanged = false;
+    for (const match of activeMatches) {
+        const changed = await handleMatchResult(match, best.status, state);
+        if (changed) stateChanged = true;
     }
 
-    // Check for coming soon / not yet live indicators
-    if (
-        (t.includes('coming soon') || t.includes('stay tuned') || t.includes('tickets not available')) &&
-        !t.includes('buy') && !t.includes('book now')
-    ) {
-        return { status: 'COMING_SOON', isLive: false, isSoldOut: false };
+    if (stateChanged) {
+        saveState(state);
+        log('  💾 State saved.');
     }
-
-    // Strongest live signals — explicit booking action words
-    const hasBuyKeyword  = t.includes('buy tickets') || t.includes('book tickets') || t.includes('book now') || t.includes('add to cart');
-    const hasMatchTerms  = t.includes(' vs ') && (t.includes('rcb') || t.includes('bangalore'));
-    const hasDates       = /\d{1,2}\s+(mar|apr|may|jun|july|march|april|june|july)/i.test(text);
-    const urlStayedOnTicket = currentUrl.includes('/ticket');
-
-    if (hasBuyKeyword || hasMatchTerms || hasDates || urlStayedOnTicket) {
-        // Extract any date found to include in notification
-        const dateMatch = text.match(/\d{1,2}\s+(?:Mar|Apr|May|Jun|Jul|March|April|June|July)[a-z]*[\s,]*\d{0,4}/i);
-        const foundDate = dateMatch ? dateMatch[0].trim() : null;
-        return { status: 'LIVE', isLive: true, isSoldOut: false, foundDate };
-    }
-
-    return { status: 'UNKNOWN', isLive: false, isSoldOut: false };
-}
-
-/** Scrape a single URL and return page text + final URL. */
-async function scrapePage(browser, targetUrl) {
-    const page = await browser.newPage();
-    try {
-        // Set realistic browser headers
-        await page.setUserAgent(randomUA());
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-IN,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'DNT': '1',
-            'Upgrade-Insecure-Requests': '1',
-        });
-
-        // Random delay before hitting the server (500ms – 2s) to avoid fingerprinting
-        await sleep(randomBetween(500, 2000));
-
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
-
-        // Extra wait for React to hydrate the DOM (up to 3s)
-        await page.waitForFunction(() => document.body.innerText.length > 100, { timeout: 5000 }).catch(() => {});
-
-        const text = await page.evaluate(() => document.body.innerText || '');
-        const currentUrl = page.url();
-        return { text, currentUrl, error: null };
-    } catch (err) {
-        return { text: '', currentUrl: targetUrl, error: err.message };
-    } finally {
-        await page.close().catch(() => {});
-    }
-}
-
-/** Build a rich Telegram message based on the classification. */
-function buildMessage(classification) {
-    const ts = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    const dateStr = classification.foundDate ? `\n📅 *Match Date Detected:* ${classification.foundDate}` : '';
-
-    return (
-        `🚨 *RCB MATCH TICKETS ARE LIVE!* 🚨\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `✅ *Status:* Tickets Available\n` +
-        dateStr +
-        `\n🏟️ *Team:* Royal Challengers Bengaluru\n` +
-        `🔗 *Book Now:* [shop.royalchallengers.com/ticket](${TARGET_URL})\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `⏰ *Detected At:* ${ts} IST\n\n` +
-        `_Open the link and book immediately before they sell out!_`
-    );
 }
 
 // ─── MAIN ──────────────────────────────────────────────────────────────────
 
 async function main() {
-    // Validate secrets
     if (!TOKEN || !CHAT_ID) {
         console.error('❌ FATAL: Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.');
         process.exit(1);
     }
 
-    const bot   = new TelegramBot(TOKEN, { polling: false });
-    const state = loadState();
-    console.log(`[${new Date().toISOString()}] Previous alert state: ${JSON.stringify(state)}`);
+    const activeMatches = getActiveMatches();
 
-    let browser = null;
-    let exitCode = 0;
-
-    try {
-        browser = await puppeteer.launch({
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--single-process',
-                '--disable-blink-features=AutomationControlled', // hide puppeteer fingerprint
-            ]
-        });
-
-        // ── PARALLEL CHECKS ──────────────────────────────────────────────
-        // We run TWO concurrent checks against the same URL in parallel.
-        // If either of them detects live tickets, we notify immediately.
-        // This effectively cuts our worst-case miss window in half.
-        console.log(`[${new Date().toISOString()}] Running 2 parallel checks...`);
-
-        const [result1, result2] = await Promise.all([
-            scrapePage(browser, TARGET_URL),
-            scrapePage(browser, TARGET_URL),
-        ]);
-
-        // Log any scrape-level errors (script will NOT crash — just report)
-        if (result1.error) console.error(`⚠️  Check #1 scrape error: ${result1.error}`);
-        if (result2.error) console.error(`⚠️  Check #2 scrape error: ${result2.error}`);
-
-        const class1 = classifyPage(result1.text, result1.currentUrl);
-        const class2 = classifyPage(result2.text, result2.currentUrl);
-
-        console.log(`[${new Date().toISOString()}] Check #1 → ${result1.currentUrl} | Status: ${class1.status}`);
-        console.log(`[${new Date().toISOString()}] Check #2 → ${result2.currentUrl} | Status: ${class2.status}`);
-
-        // Use the most optimistic classification from 2 parallel runs
-        const classification = class1.isLive ? class1 : class2.isLive ? class2 : class1;
-
-        // ── SOLD OUT ALERT ────────────────────────────────────────────────
-        if (classification.isSoldOut && state.lastAlertedStatus !== 'SOLD_OUT') {
-            const soldOutMsg =
-                `😔 *RCB Tickets Are SOLD OUT!*\n\n` +
-                `Better luck next time — keep watching the link in case returns open up.\n` +
-                `🔗 ${TARGET_URL}`;
-            await bot.sendMessage(CHAT_ID, soldOutMsg, { parse_mode: 'Markdown' });
-            saveState({ lastAlertedStatus: 'SOLD_OUT', lastAlertedAt: new Date().toISOString() });
-            console.log('📩 Sold-out notification sent.');
-        }
-
-        // ── LIVE ALERT ────────────────────────────────────────────────────
-        else if (classification.isLive) {
-            // Anti-spam: only alert if status changed from last run
-            if (state.lastAlertedStatus === 'LIVE') {
-                console.log('✅ Tickets still live but already alerted. Skipping duplicate.');
-            } else {
-                console.log('🚨 TICKETS ARE LIVE! Sending Telegram notification...');
-                const message = buildMessage(classification);
-                await bot.sendMessage(CHAT_ID, message, { parse_mode: 'Markdown', disable_web_page_preview: false });
-                saveState({ lastAlertedStatus: 'LIVE', lastAlertedAt: new Date().toISOString() });
-                console.log('📩 Live notification sent successfully!');
-            }
-        }
-
-        // ── RESET STATE if tickets went away (so we alert again next time they come back) ──
-        else {
-            if (state.lastAlertedStatus === 'LIVE') {
-                console.log('⚠️  Tickets were live before but are gone now. Resetting state to alert again next time.');
-                saveState({ lastAlertedStatus: null, lastAlertedAt: null });
-            } else {
-                console.log(`[${new Date().toISOString()}] No live tickets detected. Status: ${classification.status}`);
-            }
-        }
-
-    } catch (err) {
-        // Never let an unhandled error crash silently — always report it
-        console.error(`❌ FATAL ERROR: ${err.message}`);
-
-        // Alert on Telegram about the failure so you know the monitor is broken
-        try {
-            const bot2 = new TelegramBot(TOKEN, { polling: false });
-            await bot2.sendMessage(
-                CHAT_ID,
-                `⚠️ *RCB Monitor Error*\n\nThe monitor encountered an error during the check. Please review the GitHub Actions logs.\n\n\`${err.message}\``,
-                { parse_mode: 'Markdown' }
-            );
-        } catch (_) { /* ignore telegram failure during error reporting */ }
-
-        exitCode = 1;
-    } finally {
-        if (browser) await browser.close().catch(() => {});
-        process.exit(exitCode);
+    if (activeMatches.length === 0) {
+        log('ℹ️  No active RCB home matches found. Nothing to monitor. Exiting.');
+        process.exit(0);
     }
+
+    log(`🏏 RCB Ticket Monitor — Production Edition`);
+    log(`   Active Matches: ${activeMatches.map(m => `${m.opponent} (${m.date})`).join(', ')}`);
+    log(`   Run Window: ${RUN_DURATION_MS / 60000} minutes of real-time polling`);
+    log(`   Poll Interval: ${POLL_INTERVAL_MIN_MS / 1000}–${POLL_INTERVAL_MAX_MS / 1000} seconds`);
+
+    // Load and prune state
+    let state = loadState();
+    state = pruneExpiredMatches(state, activeMatches.map(m => m.id));
+
+    const startTime = Date.now();
+    let cycleCount  = 0;
+
+    while (Date.now() - startTime < RUN_DURATION_MS) {
+        cycleCount++;
+        log(`\n══ CYCLE #${cycleCount} (${Math.round((Date.now() - startTime) / 1000)}s elapsed) ══`);
+
+        try {
+            await runPollCycle(activeMatches, state);
+        } catch (err) {
+            log(`❌ Unhandled error in poll cycle: ${err.message}`);
+            try { await sendErrorAlert(err.message); } catch (_) {}
+        }
+
+        // Check if we still have enough time for another cycle
+        const elapsed    = Date.now() - startTime;
+        const remaining  = RUN_DURATION_MS - elapsed;
+        const nextWait   = randomBetween(POLL_INTERVAL_MIN_MS, POLL_INTERVAL_MAX_MS);
+
+        if (remaining <= nextWait + 5000) {
+            log(`\n⏱️  ${Math.round(remaining / 1000)}s remaining — ending run cleanly.`);
+            break;
+        }
+
+        log(`   Next poll in ${Math.round(nextWait / 1000)}s...`);
+        await sleep(nextWait);
+    }
+
+    // Final state save on exit
+    saveState(state);
+    log(`\n✅ Run complete. ${cycleCount} cycles executed. State saved. Exiting.`);
+    process.exit(0);
 }
 
-main();
+main().catch(async (err) => {
+    console.error('❌ Fatal crash:', err.message);
+    try { await sendErrorAlert(`Fatal crash: ${err.message}`); } catch (_) {}
+    process.exit(1);
+});
