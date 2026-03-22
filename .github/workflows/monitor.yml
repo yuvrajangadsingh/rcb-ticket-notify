@@ -22,11 +22,12 @@ jobs:
           node-version: '20'
 
       - name: Restore State Cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ./state.json
-          key: rcb-ticket-state
-          restore-keys: rcb-ticket-state
+          key: rcb-state-${{ github.run_id }}
+          restore-keys: |
+            rcb-state-
 
       - name: Install Dependencies
         run: npm install
@@ -39,7 +40,7 @@ jobs:
 
       - name: Save State Cache
         uses: actions/cache/save@v4
-        if: always()  # Save even if the run step fails
+        if: always()
         with:
           path: ./state.json
-          key: rcb-ticket-state
+          key: rcb-state-${{ github.run_id }}

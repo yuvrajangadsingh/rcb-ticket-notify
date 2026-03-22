@@ -55,10 +55,18 @@ async function handleMatchResult(match, status, state) {
     let dirty = false; // whether state has changed and needs saving
 
     if (status === STATUS.LIVE) {
-        if (!ms.ticketsLiveAlerted) {
+        // Sub-case: tickets came back LIVE after being SOLD OUT
+        if (ms.soldOutAlerted && !ms.ticketsLiveAlerted) {
+            await sendBackLiveAlert(match);
+            ms.ticketsLiveAlerted = true;
+            ms.soldOutAlerted     = false;
+            dirty = true;
+        }
+        // Sub-case: first time seeing LIVE
+        else if (!ms.ticketsLiveAlerted) {
             await sendLiveAlert(match);
             ms.ticketsLiveAlerted = true;
-            ms.soldOutAlerted     = false; // reset sold-out in case it cycles
+            ms.soldOutAlerted     = false;
             dirty = true;
         } else {
             log(`  ✅ Match ${match.id}: LIVE — already alerted, skipping.`);
@@ -81,14 +89,6 @@ async function handleMatchResult(match, status, state) {
     else if ((status === STATUS.NOT_LIVE || status === STATUS.COMING_SOON) && ms.ticketsLiveAlerted) {
         log(`  🔄 Match ${match.id}: was LIVE but now ${status}. Resetting live alert flag.`);
         ms.ticketsLiveAlerted = false;
-        dirty = true;
-    }
-
-    // Tickets came back LIVE after being SOLD OUT → special alert
-    else if (status === STATUS.LIVE && ms.soldOutAlerted && !ms.ticketsLiveAlerted) {
-        await sendBackLiveAlert(match);
-        ms.ticketsLiveAlerted = true;
-        ms.soldOutAlerted     = false;
         dirty = true;
     }
 
@@ -128,6 +128,7 @@ async function runPollCycle(activeMatches, state) {
         if (timeSinceLast > ERROR_ALERT_COOLDOWN_MS) {
             await sendErrorAlert(best.details || 'Scrape failed after retries');
             state.meta = { ...meta, lastErrorAlertedAt: new Date().toISOString() };
+            saveState(state);
         } else {
             log(`  ⚠️  Error detected but Telegram error-alert on cooldown. Logging only.`);
         }

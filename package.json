@@ -2,10 +2,10 @@
   "name": "rcb-ticket",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "cron.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
+    "start": "node cron.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
