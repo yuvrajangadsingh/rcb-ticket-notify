@@ -25,7 +25,7 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // How long this script runs before exiting (milliseconds).
 // GitHub Actions times out after 6m by default. We run for 4m 30s to be safe.
-const RUN_DURATION_MS = 15 * 1000; // 🧪 TEST: 15 seconds only (revert to 4*60*1000 + 30*1000)
+const RUN_DURATION_MS = 4 * 60 * 1000 + 30 * 1000; // 4.5 minutes
 
 // Poll every 15–20 seconds (randomised to avoid predictable fingerprint)
 const POLL_INTERVAL_MIN_MS = 15_000;

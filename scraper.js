@@ -124,10 +124,6 @@ function classify(html, finalUrl) {
  * Includes random delay + retry logic.
  */
 export async function scrape({ retries = 2 } = {}) {
-    // 🧪 TEST MODE — REMOVE AFTER TESTING
-    return { status: STATUS.LIVE, details: 'FORCED TEST MODE', foundDate: '28 March 2026' };
-    // 🧪 END TEST MODE
-
     // Random jitter delay before hitting the server (800ms – 3s)
     const jitter = randomBetween(800, 3000);
     console.log(`  ↳ Jitter delay: ${jitter}ms before request`);
