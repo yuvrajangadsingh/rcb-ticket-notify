@@ -44,7 +44,7 @@ async function checkTickets() {
         const hasMatchTerms = lowerText.includes('vs') && lowerText.includes('match');
         const hasDates = lowerText.match(/\d{1,2}\s+(mar|apr|may|jun|march|april|june)/);
 
-        const isLive = hasKeyword || hasMatchTerms || hasDates;
+        const isLive = true; // FORCE TEST MODE ON
 
         if (isLive) {
             console.log(`[${new Date().toISOString()}] 🚨 TICKETS MIGHT BE AVAILABLE! 🚨`);
