@@ -37,14 +37,19 @@ async function checkTickets() {
         const text = await page.evaluate(() => document.body.innerText || '');
         const lowerText = text.toLowerCase();
 
-        const hasKeyword = lowerText.includes('buy') ||
-            lowerText.includes('book') ||
-            lowerText.includes('add to cart');
+        const currentUrl = page.url();
 
+        // SUPER ROBUST LOGIC:
+        // Currently, the '/ticket' URL redirects to '/merchandise' because tickets are disabled.
+        // If the URL STAYS on '/ticket', or redirects to a strict ticketing queue (like TicketGenie), tickets are LIVE!
+        const urlChangedFromDisabledState = !currentUrl.includes('/merchandise') && !currentUrl.endsWith('royalchallengers.com/');
+
+        const hasKeyword = lowerText.includes('buy tickets') || lowerText.includes('book tickets');
         const hasMatchTerms = lowerText.includes('vs') && lowerText.includes('match');
         const hasDates = lowerText.match(/\d{1,2}\s+(mar|apr|may|jun|march|april|june)/);
 
-        const isLive = hasKeyword || hasMatchTerms || hasDates;
+        // It is live if the page stops redirecting to the merch store, OR finds explicit match date/ticket keywords.
+        const isLive = urlChangedFromDisabledState || hasKeyword || hasMatchTerms || hasDates;
 
         if (isLive) {
             console.log(`[${new Date().toISOString()}] 🚨 TICKETS MIGHT BE AVAILABLE! 🚨`);
