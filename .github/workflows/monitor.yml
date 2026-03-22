@@ -2,13 +2,14 @@ name: RCB Ticket Monitor
 
 on:
   schedule:
-    # Runs every 10 minutes
-    - cron: '*/10 * * * *'
-  workflow_dispatch: # Allows you to manually trigger it
+    # Runs every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allows manual triggering from GitHub UI
 
 jobs:
   check-tickets:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -18,6 +19,13 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Cache State File
+        uses: actions/cache@v4
+        with:
+          path: ./state.json
+          key: rcb-ticket-state
+          restore-keys: rcb-ticket-state
+
       - name: Install Dependencies
         run: npm install
 
@@ -26,3 +34,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node cron.js
+
+      - name: Save State File
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ./state.json
+          key: rcb-ticket-state
