@@ -73,21 +73,28 @@ async function scrapeViaAPI() {
     }
 
     // Parse each match from the API response
+    // Actual API fields: event_Name, event_Display_Date, event_Date, venue_Name,
+    //   city_Name, team_1, team_2, event_Price_Range, event_Button_Text,
+    //   team_1_Logo, team_2_Logo, event_Code, event_Group_Code
     const matches = data.result.map(event => {
-        const name = event.eventName || event.name || 'Unknown Match';
-        const id   = slugify(name);
-        const date = event.eventDate || event.date || '';
-        const venue = event.venue || event.venueName || 'M. Chinnaswamy Stadium';
-        const link = event.bookingUrl || event.url || TICKET_PAGE;
+        const name  = event.event_Name || 'Unknown Match';
+        const id    = slugify(name);
+        const date  = event.event_Display_Date || event.event_Date || '';
+        const venue = event.venue_Name
+            ? `${event.venue_Name}${event.city_Name ? ', ' + event.city_Name : ''}`
+            : 'M. Chinnaswamy Stadium, Bengaluru';
+        const price = event.event_Price_Range || '';
+        const team1 = event.team_1 || '';
+        const team2 = event.team_2 || '';
+        const buttonText = (event.event_Button_Text || '').toLowerCase();
 
-        // Determine per-match status
+        // Determine per-match status from the button text
         let status = STATUS.AVAILABLE;
-        const nameL = name.toLowerCase();
-        if (nameL.includes('sold out') || nameL.includes('housefull')) {
+        if (buttonText.includes('sold out') || buttonText.includes('housefull')) {
             status = STATUS.SOLD_OUT;
         }
 
-        return { id, name, date, venue, status, link };
+        return { id, name, date, venue, price, team1, team2, status, link: TICKET_PAGE };
     });
 
     return { method: 'API', matches, pageStatus: STATUS.AVAILABLE };

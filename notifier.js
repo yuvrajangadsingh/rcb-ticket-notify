@@ -30,8 +30,9 @@ export async function sendAvailableAlert(match) {
         `✅ *Status:* TICKETS AVAILABLE NOW!\n\n` +
         `🆚 *Match:* ${match.name}\n` +
         (match.date ? `📅 *Date:* ${match.date}\n` : '') +
-        `🏟️ *Venue:* ${match.venue || 'M. Chinnaswamy Stadium'}\n\n` +
-        `🔗 *[👉 BOOK NOW](${link})*\n` +
+        `🏟️ *Venue:* ${match.venue || 'M. Chinnaswamy Stadium'}\n` +
+        (match.price ? `💰 *Price:* ${match.price}\n` : '') +
+        `\n🔗 *[👉 BOOK NOW](${link})*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
         `⏰ *Detected:* ${istNow()} IST\n\n` +
         `_Book immediately — tickets sell out in minutes!_ 🔥`;
