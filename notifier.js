@@ -1,13 +1,12 @@
 /**
- * Telegram Notifier
- * Builds and sends all notification types: LIVE, SOLD_OUT, BACK_LIVE, ERROR.
+ * Telegram Notifier — Rich, descriptive alerts for each match.
  */
 
 import TelegramBot from 'node-telegram-bot-api';
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const TARGET_URL = 'https://shop.royalchallengers.com/ticket';
+const TOKEN      = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID    = process.env.TELEGRAM_CHAT_ID;
+const TICKET_URL = 'https://shop.royalchallengers.com/ticket';
 
 let _bot = null;
 function getBot() {
@@ -15,71 +14,73 @@ function getBot() {
     return _bot;
 }
 
-function istTime() {
+function istNow() {
     return new Date().toLocaleString('en-IN', {
         timeZone: 'Asia/Kolkata',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
         day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
 }
 
-export async function sendLiveAlert(match) {
+export async function sendAvailableAlert(match) {
+    const link = match.link || TICKET_URL;
     const msg =
         `🚨🏏 *RCB TICKETS ARE LIVE!* 🏏🚨\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
         `✅ *Status:* TICKETS AVAILABLE NOW!\n\n` +
-        `🆚 *Match:* RCB vs ${match.opponent}\n` +
-        `📅 *Date:* ${match.date} at ${match.time}\n` +
-        `🏟️ *Venue:* ${match.venue}\n\n` +
-        `🔗 *[👉 CLICK HERE TO BOOK NOW](${TARGET_URL})*\n` +
+        `🆚 *Match:* ${match.name}\n` +
+        (match.date ? `📅 *Date:* ${match.date}\n` : '') +
+        `🏟️ *Venue:* ${match.venue || 'M. Chinnaswamy Stadium'}\n\n` +
+        `🔗 *[👉 BOOK NOW](${link})*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `⏰ *Detected At:* ${istTime()} IST\n\n` +
-        `_Act fast — tickets sell out in minutes!_ 🔥`;
+        `⏰ *Detected:* ${istNow()} IST\n\n` +
+        `_Book immediately — tickets sell out in minutes!_ 🔥`;
 
     await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown', disable_web_page_preview: false });
-    console.log(`📩 [LIVE ALERT] Sent for match: ${match.id}`);
+    console.log(`📩 [LIVE] Alert sent: ${match.name}`);
 }
 
 export async function sendSoldOutAlert(match) {
     const msg =
-        `😔 *RCB Tickets Sold Out*\n` +
+        `😔 *Tickets Sold Out*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `🆚 *Match:* RCB vs ${match.opponent}\n` +
-        `📅 *Date:* ${match.date} at ${match.time}\n\n` +
-        `All tickets are sold. Keep watching the link — cancellations sometimes open up.\n` +
-        `🔗 ${TARGET_URL}\n` +
+        `🆚 *Match:* ${match.name}\n` +
+        (match.date ? `📅 *Date:* ${match.date}\n` : '') +
+        `\nAll tickets gone. Keep watching — returns sometimes open up.\n` +
+        `🔗 ${TICKET_URL}\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `⏰ Checked at: ${istTime()} IST`;
+        `⏰ ${istNow()} IST`;
 
     await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
-    console.log(`📩 [SOLD OUT ALERT] Sent for match: ${match.id}`);
+    console.log(`📩 [SOLD OUT] Alert sent: ${match.name}`);
 }
 
-export async function sendBackLiveAlert(match) {
+export async function sendBackAvailableAlert(match) {
+    const link = match.link || TICKET_URL;
     const msg =
-        `🔄🚨 *RCB TICKETS BACK IN STOCK!* 🚨🔄\n` +
+        `🔄🚨 *TICKETS BACK IN STOCK!* 🚨🔄\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `♻️ *Status:* Tickets were sold out but are AVAILABLE AGAIN!\n\n` +
-        `🆚 *Match:* RCB vs ${match.opponent}\n` +
-        `📅 *Date:* ${match.date} at ${match.time}\n` +
-        `🏟️ *Venue:* ${match.venue}\n\n` +
-        `🔗 *[👉 CLICK TO BOOK NOW](${TARGET_URL})*\n` +
+        `♻️ Were sold out → NOW AVAILABLE AGAIN!\n\n` +
+        `🆚 *Match:* ${match.name}\n` +
+        (match.date ? `📅 *Date:* ${match.date}\n` : '') +
+        `🏟️ *Venue:* ${match.venue || 'M. Chinnaswamy Stadium'}\n\n` +
+        `🔗 *[👉 BOOK NOW](${link})*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `⏰ *Detected At:* ${istTime()} IST`;
+        `⏰ *Detected:* ${istNow()} IST`;
 
     await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown', disable_web_page_preview: false });
-    console.log(`📩 [BACK LIVE ALERT] Sent for match: ${match.id}`);
+    console.log(`📩 [BACK IN STOCK] Alert sent: ${match.name}`);
 }
 
 export async function sendErrorAlert(errorMessage) {
     const msg =
-        `⚠️ *RCB Monitor — Script Error*\n` +
+        `⚠️ *RCB Monitor — Error*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `The monitor encountered an error and may have missed a check.\n\n` +
-        `\`\`\`\n${errorMessage.slice(0, 500)}\n\`\`\`\n\n` +
-        `Please check [GitHub Actions logs](https://github.com/nit2370/rcb-ticket-notify/actions).\n` +
-        `⏰ ${istTime()} IST`;
+        `The monitor hit an error.\n\n` +
+        `\`\`\`\n${errorMessage.slice(0, 400)}\n\`\`\`\n\n` +
+        `[Check Logs](https://github.com/nit2370/rcb-ticket-notify/actions)\n` +
+        `⏰ ${istNow()} IST`;
 
     await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
-    console.log(`📩 [ERROR ALERT] Sent.`);
+    console.log(`📩 [ERROR] Alert sent.`);
 }

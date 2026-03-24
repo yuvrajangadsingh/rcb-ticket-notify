@@ -2,19 +2,11 @@
   "name": "rcb-ticket",
   "version": "1.0.0",
   "description": "",
-  "main": "cron.js",
-  "type": "module",
+  "main": "index.js",
   "scripts": {
-    "start": "node cron.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "cheerio": "^1.0.0",
-    "dotenv": "^16.4.5",
-    "node-telegram-bot-api": "^0.65.0",
-    "puppeteer": "^22.6.0"
-  }
+  "license": "ISC"
 }

@@ -1,17 +1,23 @@
 /**
- * State Manager — Persists per-match notification state to state.json.
+ * State Manager — Per-match state with file-based persistence.
  *
- * State per match:
- *   ticketsLiveAlerted  — true once we send the LIVE alert
- *   soldOutAlerted      — true once we send the SOLD-OUT alert
- *   lastStatus          — last known status string
- *   lastChecked         — ISO timestamp of last successful check
+ * State structure:
+ * {
+ *   "rcb-vs-srh-28-mar-2026": {
+ *     "status": "AVAILABLE",
+ *     "alertedAvailable": true,
+ *     "alertedSoldOut": false,
+ *     "lastChecked": "2026-03-28T10:00:00Z"
+ *   },
+ *   "meta": {
+ *     "lastErrorAlertedAt": "..."
+ *   }
+ * }
  *
- * Cooldown Logic:
- *   - After a match date passes, its state key is deleted automatically.
- *   - If tickets go from LIVE → NOT_LIVE, we reset `ticketsLiveAlerted` so
- *     the next time they come back live we alert again (handles brief drops).
- *   - A global `lastErrorAlertedAt` prevents spamming error notifications.
+ * Rules:
+ *  - Alert only when a match's status CHANGES (NOT_AVAILABLE → AVAILABLE, AVAILABLE → SOLD_OUT)
+ *  - Never duplicate alerts for the same status
+ *  - If a match goes AVAILABLE → NOT_AVAILABLE → AVAILABLE again, re-alert (batch release)
  */
 
 import fs from 'fs';
@@ -32,32 +38,64 @@ export function saveState(state) {
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-/** Returns state for a single match, defaulting to fresh. */
+/**
+ * Get state for a specific match, creating default if not exists.
+ */
 export function getMatchState(state, matchId) {
-    return state[matchId] || {
-        ticketsLiveAlerted: false,
-        soldOutAlerted:     false,
-        lastStatus:         null,
-        lastChecked:        null,
-    };
-}
-
-/** Writes back updated match state into the global state object. */
-export function setMatchState(state, matchId, matchState) {
-    state[matchId] = { ...matchState, lastChecked: new Date().toISOString() };
+    if (!state[matchId]) {
+        state[matchId] = {
+            status: 'NOT_AVAILABLE',
+            alertedAvailable: false,
+            alertedSoldOut: false,
+            lastChecked: null,
+        };
+    }
+    return state[matchId];
 }
 
 /**
- * Purges state for matches that are more than 2 days past their match date.
- * This is what "resets" the cooldown for each match lifecycle.
+ * Determine if we should send a notification based on the status transition.
+ * Returns: 'ALERT_AVAILABLE' | 'ALERT_SOLD_OUT' | 'ALERT_BACK_AVAILABLE' | null
  */
-export function pruneExpiredMatches(state, activeMatchIds) {
-    const prunedState = {};
-    for (const [id, val] of Object.entries(state)) {
-        if (activeMatchIds.includes(id) || id === 'meta') {
-            prunedState[id] = val;
+export function shouldAlert(matchState, newStatus) {
+    const old = matchState.status;
+
+    // NOT_AVAILABLE → AVAILABLE (first time tickets drop!)
+    if (newStatus === 'AVAILABLE' && old !== 'AVAILABLE') {
+        // Was it sold out before? → special "back in stock" alert
+        if (matchState.alertedSoldOut) {
+            return 'ALERT_BACK_AVAILABLE';
         }
-        // else: match is expired, STATE is dropped → fresh start for future matches
+        return 'ALERT_AVAILABLE';
     }
-    return prunedState;
+
+    // AVAILABLE → SOLD_OUT
+    if (newStatus === 'SOLD_OUT' && old !== 'SOLD_OUT') {
+        return 'ALERT_SOLD_OUT';
+    }
+
+    // No change or same status → no alert
+    return null;
+}
+
+/**
+ * Apply status update after notification decision.
+ */
+export function updateMatchState(matchState, newStatus, alerted) {
+    matchState.status = newStatus;
+    matchState.lastChecked = new Date().toISOString();
+
+    if (alerted === 'ALERT_AVAILABLE' || alerted === 'ALERT_BACK_AVAILABLE') {
+        matchState.alertedAvailable = true;
+        matchState.alertedSoldOut = false;
+    } else if (alerted === 'ALERT_SOLD_OUT') {
+        matchState.alertedSoldOut = true;
+        matchState.alertedAvailable = false; // reset so we re-alert if tickets return
+    }
+
+    // If status went back to NOT_AVAILABLE, reset the available flag
+    // so next time tickets drop, we alert again
+    if (newStatus === 'NOT_AVAILABLE') {
+        matchState.alertedAvailable = false;
+    }
 }
