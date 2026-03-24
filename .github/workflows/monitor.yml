@@ -25,9 +25,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ./state.json
-          key: rcb-state-${{ github.run_id }}
+          key: rcb-ticket-state-v4-${{ github.run_id }}
           restore-keys: |
-            rcb-state-
+            rcb-ticket-state-v4-
 
       - name: Install Dependencies
         run: npm install
@@ -43,4 +43,4 @@ jobs:
         if: always()
         with:
           path: ./state.json
-          key: rcb-state-${{ github.run_id }}
+          key: rcb-ticket-state-v4-${{ github.run_id }}
