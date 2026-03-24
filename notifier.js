@@ -5,13 +5,26 @@
 import TelegramBot from 'node-telegram-bot-api';
 
 const TOKEN      = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID    = process.env.TELEGRAM_CHAT_ID;
+const CHAT_IDS   = (process.env.TELEGRAM_CHAT_ID || '').split(',').map(id => id.trim()).filter(Boolean);
 const TICKET_URL = 'https://shop.royalchallengers.com/ticket';
 
 let _bot = null;
 function getBot() {
     if (!_bot) _bot = new TelegramBot(TOKEN, { polling: false });
     return _bot;
+}
+
+async function broadcast(msg, options) {
+    if (!CHAT_IDS.length) {
+        console.warn('⚠️ No TELEGRAM_CHAT_ID configured!');
+        return;
+    }
+    const bot = getBot();
+    await Promise.allSettled(
+        CHAT_IDS.map(chatId => bot.sendMessage(chatId, msg, options).catch(err => {
+            console.error(`❌ Failed to send to ${chatId}:`, err.message);
+        }))
+    );
 }
 
 function istNow() {
@@ -37,8 +50,8 @@ export async function sendAvailableAlert(match) {
         `⏰ *Detected:* ${istNow()} IST\n\n` +
         `_Book immediately — tickets sell out in minutes!_ 🔥`;
 
-    await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown', disable_web_page_preview: false });
-    console.log(`📩 [LIVE] Alert sent: ${match.name}`);
+    await broadcast(msg, { parse_mode: 'Markdown', disable_web_page_preview: false });
+    console.log(`📩 [LIVE] Alert sent to ${CHAT_IDS.length} chat(s): ${match.name}`);
 }
 
 export async function sendSoldOutAlert(match) {
@@ -52,8 +65,8 @@ export async function sendSoldOutAlert(match) {
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
         `⏰ ${istNow()} IST`;
 
-    await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
-    console.log(`📩 [SOLD OUT] Alert sent: ${match.name}`);
+    await broadcast(msg, { parse_mode: 'Markdown' });
+    console.log(`📩 [SOLD OUT] Alert sent to ${CHAT_IDS.length} chat(s): ${match.name}`);
 }
 
 export async function sendBackAvailableAlert(match) {
@@ -69,8 +82,8 @@ export async function sendBackAvailableAlert(match) {
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
         `⏰ *Detected:* ${istNow()} IST`;
 
-    await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown', disable_web_page_preview: false });
-    console.log(`📩 [BACK IN STOCK] Alert sent: ${match.name}`);
+    await broadcast(msg, { parse_mode: 'Markdown', disable_web_page_preview: false });
+    console.log(`📩 [BACK IN STOCK] Alert sent to ${CHAT_IDS.length} chat(s): ${match.name}`);
 }
 
 export async function sendErrorAlert(errorMessage) {
@@ -82,6 +95,6 @@ export async function sendErrorAlert(errorMessage) {
         `[Check Logs](https://github.com/nit2370/rcb-ticket-notify/actions)\n` +
         `⏰ ${istNow()} IST`;
 
-    await getBot().sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
-    console.log(`📩 [ERROR] Alert sent.`);
+    await broadcast(msg, { parse_mode: 'Markdown' });
+    console.log(`📩 [ERROR] Alert sent to ${CHAT_IDS.length} chat(s).`);
 }
