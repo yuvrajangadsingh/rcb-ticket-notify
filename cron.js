@@ -52,10 +52,20 @@ async function runPollCycle(state) {
         return;
     }
 
-    // ── No matches in API → page says "Tickets not available" ──
+    // ── No matches in API → mark active matches as NOT_AVAILABLE ──
     if (result.matches.length === 0) {
-        log('  ℹ️  No matches with tickets. "Tickets not available" state.');
-        // Don't touch per-match state here — we only update when we SEE a match
+        log('  ℹ️  No matches found. Marking active matches as NOT_AVAILABLE.');
+        let changed = false;
+        for (const [key, ms] of Object.entries(state)) {
+            if (key === 'meta') continue;
+            if (ms.status === 'AVAILABLE') {
+                ms.status = 'NOT_AVAILABLE';
+                ms.alertedAvailable = false;
+                ms.lastChecked = new Date().toISOString();
+                changed = true;
+            }
+        }
+        if (changed) saveState(state);
         return;
     }
 
@@ -69,18 +79,23 @@ async function runPollCycle(state) {
         if (alertType) {
             log(`  🔔 Match "${match.name}" → ${alertType}`);
 
+            let delivered = false;
             try {
-                if (alertType === 'ALERT_AVAILABLE')      await sendAvailableAlert(match);
-                if (alertType === 'ALERT_BACK_AVAILABLE')  await sendBackAvailableAlert(match);
-                if (alertType === 'ALERT_SOLD_OUT')        await sendSoldOutAlert(match);
+                if (alertType === 'ALERT_AVAILABLE')      delivered = await sendAvailableAlert(match);
+                if (alertType === 'ALERT_BACK_AVAILABLE')  delivered = await sendBackAvailableAlert(match);
+                if (alertType === 'ALERT_SOLD_OUT')        delivered = await sendSoldOutAlert(match);
             } catch (err) {
                 log(`  ❌ Failed to send Telegram alert: ${err.message}`);
             }
 
-            updateMatchState(ms, match.status, alertType);
-            stateChanged = true;
+            // Only update state if alert was actually delivered
+            if (delivered) {
+                updateMatchState(ms, match.status, alertType);
+                stateChanged = true;
+            } else {
+                log(`  ⚠️ Alert not delivered, will retry next cycle.`);
+            }
         } else {
-            // Status unchanged — just update lastChecked
             ms.lastChecked = new Date().toISOString();
             log(`  ✅ Match "${match.name}" → ${match.status} (no change, no alert)`);
         }
