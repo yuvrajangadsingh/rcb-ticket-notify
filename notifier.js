@@ -102,7 +102,7 @@ export async function sendErrorAlert(errorMessage) {
         `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
         `The monitor hit an error.\n\n` +
         `\`\`\`\n${errorMessage.slice(0, 400)}\n\`\`\`\n\n` +
-        `[Check Logs](https://github.com/nit2370/rcb-ticket-notify/actions)\n` +
+        `[Check Logs](https://github.com/yuvrajangadsingh/rcb-ticket-notify/actions)\n` +
         `⏰ ${istNow()} IST`;
 
     await broadcast(msg, { parse_mode: 'Markdown' });
