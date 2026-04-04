@@ -10,25 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Check PBKS vs LSG ticket status
+      - name: Check Chandigarh match ticket status
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          STATUS=$(curl -s "https://www.district.in/events/ipl-ticket-booking" \
-            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" | \
-            grep -oP 'Punjab Kings vs Lucknow Super Giants.*?Coming soon|Punjab Kings vs Lucknow Super Giants.*?Book|Punjab Kings vs Lucknow Super Giants.*?Tickets available' | head -1)
+          PAGE=$(curl -s "https://www.district.in/events/ipl-ticket-booking" \
+            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
 
-          if echo "$STATUS" | grep -qi "coming soon"; then
-            echo "Still Coming soon"
-            exit 0
-          fi
+          for MATCH in "Punjab Kings vs Lucknow Super Giants" "Punjab Kings vs Rajasthan Royals"; do
+            STATUS=$(echo "$PAGE" | grep -oP "${MATCH}.*?(?:Coming soon|Book|Tickets available|Sold out)" | head -1)
 
-          if [ -n "$STATUS" ]; then
-            curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              -d chat_id="${TELEGRAM_CHAT_ID}" \
-              -d "text=PBKS vs LSG (Apr 19, Chandigarh) ticket status CHANGED! Check: https://www.district.in/events/ipl-ticket-booking"
-            echo "ALERT SENT"
-          else
-            echo "Match not found or page changed"
-          fi
+            if echo "$STATUS" | grep -qi "coming soon"; then
+              echo "${MATCH}: Still Coming soon"
+              continue
+            fi
+
+            if [ -n "$STATUS" ]; then
+              curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${TELEGRAM_CHAT_ID}" \
+                -d "text=${MATCH} (Chandigarh) ticket status CHANGED! Check: https://www.district.in/events/ipl-ticket-booking"
+              echo "ALERT SENT: ${MATCH}"
+            fi
+          done
